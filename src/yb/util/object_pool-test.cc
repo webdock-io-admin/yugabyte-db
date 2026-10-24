@@ -106,7 +106,7 @@ TEST(TestObjectPool, PoolIndexForCpu) {
   using object_pool_internal::PoolIndexForCpu;
   ASSERT_EQ(0, PoolIndexForCpu(0, 4));
   ASSERT_EQ(3, PoolIndexForCpu(3, 4));
-  // A host CPU id inside a container whose /proc/cpuinfo lists only 4 CPUs.
+  // A host CPU id inside a container that sees only 4 online CPUs.
   ASSERT_LT(PoolIndexForCpu(80, 4), 4);
   ASSERT_LT(PoolIndexForCpu(123, 4), 4);
   // sched_getcpu() failed.

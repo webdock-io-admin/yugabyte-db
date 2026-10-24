@@ -198,7 +198,7 @@ namespace object_pool_internal {
 
 // Returns the index of the per-CPU pool to use for the given result of sched_getcpu().
 // The result is always < num_pools: a CPU id that is unknown (negative) or out of range, e.g. a
-// host CPU id inside a container whose /proc/cpuinfo lists fewer CPUs, is mapped to a valid pool.
+// host CPU id inside a container that sees fewer online CPUs, is mapped to a valid pool.
 inline size_t PoolIndexForCpu(int cpu, size_t num_pools) {
   if (cpu < 0) {
     return std::hash<std::thread::id>()(std::this_thread::get_id()) % num_pools;
@@ -218,9 +218,8 @@ class ThreadSafeObjectPool {
                                 Deleter deleter = std::default_delete<T>())
       : factory_(std::move(factory)), deleter_(std::move(deleter)) {
     // Need the actual number of CPUs, so we do not use the Gflag value.
-    // Pools are indexed by sched_getcpu(), which can exceed the number of CPUs listed in
-    // /proc/cpuinfo (e.g. in a container with a CPU limit), so also cover the maximum CPU index,
-    // as PerCpuRwMutex does.
+    // Pools are indexed by sched_getcpu(), which can exceed the number of online CPUs (e.g. in a
+    // container with a CPU limit), so also cover the maximum CPU index, as PerCpuRwMutex does.
     size_t num_cpus = std::max(base::RawNumCPUs(), base::MaxCPUIndex() + 1);
     pools_.reserve(num_cpus);
     while (pools_.size() != num_cpus) {
