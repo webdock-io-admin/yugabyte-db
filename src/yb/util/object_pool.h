@@ -35,11 +35,11 @@
 
 #include <stdint.h>
 
+#include <algorithm>
 #include <functional>
-
-#if defined(__APPLE__)
 #include <thread>
-#else
+
+#if !defined(__APPLE__)
 #include <sched.h>
 #endif
 
@@ -194,6 +194,20 @@ struct DefaultFactory {
   }
 };
 
+namespace object_pool_internal {
+
+// Returns the index of the per-CPU pool to use for the given result of sched_getcpu().
+// The result is always < num_pools: a CPU id that is unknown (negative) or out of range, e.g. a
+// host CPU id inside a container whose /proc/cpuinfo lists fewer CPUs, is mapped to a valid pool.
+inline size_t PoolIndexForCpu(int cpu, size_t num_pools) {
+  if (cpu < 0) {
+    return std::hash<std::thread::id>()(std::this_thread::get_id()) % num_pools;
+  }
+  return static_cast<size_t>(cpu) % num_pools;
+}
+
+} // namespace object_pool_internal
+
 template <class T>
 class ThreadSafeObjectPool {
  public:
@@ -203,8 +217,11 @@ class ThreadSafeObjectPool {
   explicit ThreadSafeObjectPool(Factory factory = DefaultFactory<T>(),
                                 Deleter deleter = std::default_delete<T>())
       : factory_(std::move(factory)), deleter_(std::move(deleter)) {
-    // Need the actual number of CPUs, so we do not use the Gflag value
-    size_t num_cpus = base::RawNumCPUs();
+    // Need the actual number of CPUs, so we do not use the Gflag value.
+    // Pools are indexed by sched_getcpu(), which can exceed the number of CPUs listed in
+    // /proc/cpuinfo (e.g. in a container with a CPU limit), so also cover the maximum CPU index,
+    // as PerCpuRwMutex does.
+    size_t num_cpus = std::max(base::RawNumCPUs(), base::MaxCPUIndex() + 1);
     pools_.reserve(num_cpus);
     while (pools_.size() != num_cpus) {
       pools_.emplace_back(50);
@@ -242,9 +259,7 @@ class ThreadSafeObjectPool {
     // OSX doesn't have a way to get the CPU, so we'll pick a random one.
     return std::hash<std::thread::id>()(std::this_thread::get_id()) % pools_.size();
 #else
-    size_t cpu = sched_getcpu();
-    DCHECK_LT(cpu, pools_.size());
-    return cpu;
+    return object_pool_internal::PoolIndexForCpu(sched_getcpu(), pools_.size());
 #endif // defined(__APPLE__)
   }
 

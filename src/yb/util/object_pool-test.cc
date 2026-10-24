@@ -30,6 +30,12 @@
 // under the License.
 //
 
+#include <pthread.h>
+#include <sched.h>
+
+#include <thread>
+#include <vector>
+
 #include "yb/util/logging.h"
 #include <gtest/gtest.h>
 
@@ -97,5 +103,60 @@ TEST(TestObjectPool, TestScopedPtr) {
   }
   ASSERT_EQ(0, MyClass::instance_count());
 }
+
+TEST(TestObjectPool, PoolIndexForCpu) {
+  using object_pool_internal::PoolIndexForCpu;
+  ASSERT_EQ(0, PoolIndexForCpu(0, 4));
+  ASSERT_EQ(3, PoolIndexForCpu(3, 4));
+  // A host CPU id inside a container whose /proc/cpuinfo lists only 4 CPUs.
+  ASSERT_LT(PoolIndexForCpu(80, 4), 4);
+  ASSERT_LT(PoolIndexForCpu(123, 4), 4);
+  // sched_getcpu() failed.
+  ASSERT_LT(PoolIndexForCpu(-1, 4), 4);
+  ASSERT_EQ(0, PoolIndexForCpu(-1, 1));
+}
+
+#if !defined(__APPLE__)
+// Takes and releases an object on each CPU this process may run on. Every CPU id returned by
+// sched_getcpu() must have its own pool, so an object released on a CPU is reused on that CPU.
+TEST(TestObjectPool, ThreadSafePoolOnEveryCpu) {
+  cpu_set_t allowed;
+  CPU_ZERO(&allowed);
+  ASSERT_EQ(0, sched_getaffinity(0, sizeof(allowed), &allowed));
+  ASSERT_GE(base::MaxCPUIndex() + 1, CPU_COUNT(&allowed));
+
+  MyClass::ResetCount();
+  {
+    ThreadSafeObjectPool<MyClass> pool;
+    for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
+      if (!CPU_ISSET(cpu, &allowed)) {
+        continue;
+      }
+      SCOPED_TRACE(cpu);
+      int seen_cpu = -1;
+      MyClass* first = nullptr;
+      MyClass* second = nullptr;
+      std::thread thread([&] {
+        cpu_set_t only;
+        CPU_ZERO(&only);
+        CPU_SET(cpu, &only);
+        if (pthread_setaffinity_np(pthread_self(), sizeof(only), &only) != 0) {
+          return;
+        }
+        seen_cpu = sched_getcpu();
+        first = pool.Take();
+        pool.Release(first);
+        second = pool.Take();
+        pool.Release(second);
+      });
+      thread.join();
+      ASSERT_EQ(cpu, seen_cpu);
+      ASSERT_NE(nullptr, first);
+      ASSERT_EQ(first, second) << "object released on CPU " << cpu << " should be reused there";
+    }
+  }
+  ASSERT_EQ(0, MyClass::instance_count());
+}
+#endif // !defined(__APPLE__)
 
 } // namespace yb
