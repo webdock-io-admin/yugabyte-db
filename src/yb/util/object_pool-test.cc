@@ -33,13 +33,11 @@
 #include <pthread.h>
 #include <sched.h>
 
-#include <thread>
-#include <vector>
-
 #include "yb/util/logging.h"
 #include <gtest/gtest.h>
 
 #include "yb/util/object_pool.h"
+#include "yb/util/test_thread_holder.h"
 
 namespace yb {
 
@@ -136,7 +134,8 @@ TEST(TestObjectPool, ThreadSafePoolOnEveryCpu) {
       int seen_cpu = -1;
       MyClass* first = nullptr;
       MyClass* second = nullptr;
-      std::thread thread([&] {
+      TestThreadHolder holder;
+      holder.AddThreadFunctor([&] {
         cpu_set_t only;
         CPU_ZERO(&only);
         CPU_SET(cpu, &only);
@@ -149,7 +148,7 @@ TEST(TestObjectPool, ThreadSafePoolOnEveryCpu) {
         second = pool.Take();
         pool.Release(second);
       });
-      thread.join();
+      holder.JoinAll();
       ASSERT_EQ(cpu, seen_cpu);
       ASSERT_NE(nullptr, first);
       ASSERT_EQ(first, second) << "object released on CPU " << cpu << " should be reused there";
